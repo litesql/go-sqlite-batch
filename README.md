@@ -23,20 +23,26 @@ Queries and explicit transactions use the normal connection path. Statements tha
 
 ## Worker Helpers
 
-If you can't register the wrapper as a `database/sql` driver, use `StartWorker` directly with your `*sql.DB` and send `WorkerItem` values to its returned channel:
+If you can't register the wrapper as a `database/sql` driver, use `StartWorker` directly with your `*sql.DB`. Submit `WorkerItem` values to the returned worker:
 
 ```go
-worker := sqlitebatch.StartWorker(db, sqlitebatch.Options{
+worker, err := sqlitebatch.StartWorker(db, sqlitebatch.Options{
 	MaxBatch:  100,
 	MaxDelay:  20 * time.Millisecond,
 	QueueSize: 500,
 })
+if err != nil {
+	panic(err)
+}
+defer worker.Close()
 
 response := make(chan error, 1)
-worker <- sqlitebatch.WorkerItem{
+if err := worker.Submit(sqlitebatch.WorkerItem{
 	Query:    `INSERT INTO records(value) VALUES (?)`,
 	Args:     []any{"value"},
 	Response: response,
+}); err != nil {
+	panic(err)
 }
 if err := <-response; err != nil {
 	panic(err)
@@ -45,7 +51,7 @@ if err := <-response; err != nil {
 
 `StartWorker` flushes when the batch reaches `MaxBatch` or when `MaxDelay` expires. Each item runs in a transaction under its own savepoint, so one failed query does not roll back other successful items. Each item receives exactly one result on its `Response` channel: `nil` after a successful commit, or an error if the item or transaction fails. Provide a writable response channel for every item. If the worker cannot send a result because the channel is unbuffered and no receiver is ready, it blocks.
 
-Use `StartPreparedWorker` to batch arguments for an existing prepared statement:
+Use `StartPreparedWorker` to batch arguments for an existing prepared statement. Keep the statement open until the worker is closed:
 
 ```go
 stmt, err := db.Prepare(`INSERT INTO records(value) VALUES (?)`)
@@ -53,23 +59,29 @@ if err != nil {
 	panic(err)
 }
 
-worker := sqlitebatch.StartPreparedWorker(db, stmt, sqlitebatch.Options{
+worker, err := sqlitebatch.StartPreparedWorker(db, stmt, sqlitebatch.Options{
 	MaxBatch:  100,
 	MaxDelay:  20 * time.Millisecond,
 	QueueSize: 500,
 })
+if err != nil {
+	panic(err)
+}
+defer worker.Close()
 
 response := make(chan error, 1)
-worker <- sqlitebatch.PreparedWorkerItem{
+if err := worker.Submit(sqlitebatch.PreparedWorkerItem{
 	Args:     []any{"value"},
 	Response: response,
+}); err != nil {
+	panic(err)
 }
 if err := <-response; err != nil {
 	panic(err)
 }
 ```
 
-Both helpers start a background worker and return a send-only channel; they do not provide a stop method. Keep the database and, for `StartPreparedWorker`, the statement open while the worker is in use. Unlike `New`, the helpers do not fill in defaults: pass a positive `MaxDelay`, a positive `MaxBatch`, and a non-negative `QueueSize`.
+Both helpers return a managed worker with `Submit` and `Close` methods. `Close` flushes pending items, waits for the background worker to exit, and makes later `Submit` calls return `sqlitebatch.ErrWorkerClosed`. Keep the database open until the worker is closed, and keep the prepared statement open until its worker is closed. Constructors return an error for a nil database, a nil prepared statement, or invalid options; pass a positive `MaxDelay`, a positive `MaxBatch`, and a non-negative `QueueSize`. Each item must have a writable `Response` channel. If the worker cannot send a result because the channel is unbuffered and no receiver is ready, it blocks.
 
 ## Benchmark
 

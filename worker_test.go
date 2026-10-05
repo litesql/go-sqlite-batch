@@ -76,12 +76,18 @@ func TestStartWorkerFlushesByBatchSizeOrDelay(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			db := openWorkerTestDB(t)
-			worker := sqlitebatch.StartWorker(db, test.options)
+			worker, err := sqlitebatch.StartWorker(db, test.options)
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(worker.Close)
 			for _, value := range test.values {
-				worker <- sqlitebatch.WorkerItem{
+				if err := worker.Submit(sqlitebatch.WorkerItem{
 					Query:    `INSERT INTO records(value) VALUES (?)`,
 					Args:     []any{value},
 					Response: make(chan error, 1),
+				}); err != nil {
+					t.Fatal(err)
 				}
 			}
 			waitForRecordCount(t, db, len(test.values))
@@ -91,22 +97,30 @@ func TestStartWorkerFlushesByBatchSizeOrDelay(t *testing.T) {
 
 func TestStartWorkerReportsItemErrorWithoutRollingBackBatch(t *testing.T) {
 	db := openWorkerTestDB(t)
-	worker := sqlitebatch.StartWorker(db, sqlitebatch.Options{
+	worker, err := sqlitebatch.StartWorker(db, sqlitebatch.Options{
 		MaxBatch:  2,
 		MaxDelay:  time.Second,
 		QueueSize: 2,
 	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(worker.Close)
 
-	worker <- sqlitebatch.WorkerItem{
+	if err := worker.Submit(sqlitebatch.WorkerItem{
 		Query:    `INSERT INTO records(value) VALUES (?)`,
 		Args:     []any{"kept"},
 		Response: make(chan error, 1),
+	}); err != nil {
+		t.Fatal(err)
 	}
 	response := make(chan error, 1)
-	worker <- sqlitebatch.WorkerItem{
+	if err := worker.Submit(sqlitebatch.WorkerItem{
 		Query:    `INSERT INTO missing_table(value) VALUES (?)`,
 		Args:     []any{"bad"},
 		Response: response,
+	}); err != nil {
+		t.Fatal(err)
 	}
 
 	select {
@@ -159,11 +173,17 @@ func TestStartPreparedWorkerFlushesByBatchSizeOrDelay(t *testing.T) {
 				}
 			})
 
-			worker := sqlitebatch.StartPreparedWorker(db, stmt, test.options)
+			worker, err := sqlitebatch.StartPreparedWorker(db, stmt, test.options)
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(worker.Close)
 			for _, value := range test.values {
-				worker <- sqlitebatch.PreparedWorkerItem{
+				if err := worker.Submit(sqlitebatch.PreparedWorkerItem{
 					Args:     []any{value},
 					Response: make(chan error, 1),
+				}); err != nil {
+					t.Fatal(err)
 				}
 			}
 			waitForRecordCount(t, db, len(test.values))
@@ -183,19 +203,27 @@ func TestStartPreparedWorkerReportsItemErrorWithoutRollingBackBatch(t *testing.T
 		}
 	})
 
-	worker := sqlitebatch.StartPreparedWorker(db, stmt, sqlitebatch.Options{
+	worker, err := sqlitebatch.StartPreparedWorker(db, stmt, sqlitebatch.Options{
 		MaxBatch:  2,
 		MaxDelay:  time.Second,
 		QueueSize: 2,
 	})
-	worker <- sqlitebatch.PreparedWorkerItem{
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(worker.Close)
+	if err := worker.Submit(sqlitebatch.PreparedWorkerItem{
 		Args:     []any{"kept"},
 		Response: make(chan error, 1),
+	}); err != nil {
+		t.Fatal(err)
 	}
 	response := make(chan error, 1)
-	worker <- sqlitebatch.PreparedWorkerItem{
+	if err := worker.Submit(sqlitebatch.PreparedWorkerItem{
 		Args:     []any{"kept"},
 		Response: response,
+	}); err != nil {
+		t.Fatal(err)
 	}
 
 	select {
@@ -207,4 +235,76 @@ func TestStartPreparedWorkerReportsItemErrorWithoutRollingBackBatch(t *testing.T
 		t.Fatal("timed out waiting for the duplicate value error")
 	}
 	waitForRecordCount(t, db, 1)
+}
+
+func TestStartWorkerCloseFlushesPendingItems(t *testing.T) {
+	db := openWorkerTestDB(t)
+	worker, err := sqlitebatch.StartWorker(db, sqlitebatch.Options{
+		MaxBatch:  10,
+		MaxDelay:  time.Second,
+		QueueSize: 1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	response := make(chan error, 1)
+	if err := worker.Submit(sqlitebatch.WorkerItem{
+		Query:    `INSERT INTO records(value) VALUES (?)`,
+		Args:     []any{"flushed-on-close"},
+		Response: response,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	worker.Close()
+	t.Cleanup(worker.Close)
+
+	if err := <-response; err != nil {
+		t.Fatalf("worker item failed: %v", err)
+	}
+	if err := worker.Submit(sqlitebatch.WorkerItem{
+		Query:    `INSERT INTO records(value) VALUES (?)`,
+		Args:     []any{"after-close"},
+		Response: make(chan error, 1),
+	}); err != sqlitebatch.ErrWorkerClosed {
+		t.Fatalf("Submit after Close returned %v, want ErrWorkerClosed", err)
+	}
+	waitForRecordCount(t, db, 1)
+}
+
+func TestStartWorkerRejectsInvalidOptions(t *testing.T) {
+	db := openWorkerTestDB(t)
+	tests := []struct {
+		name    string
+		options sqlitebatch.Options
+	}{
+		{
+			name: "zero batch size",
+			options: sqlitebatch.Options{
+				MaxDelay: time.Millisecond,
+			},
+		},
+		{
+			name: "zero max delay",
+			options: sqlitebatch.Options{
+				MaxBatch: 1,
+			},
+		},
+		{
+			name: "negative queue size",
+			options: sqlitebatch.Options{
+				MaxBatch:  1,
+				MaxDelay:  time.Millisecond,
+				QueueSize: -1,
+			},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if _, err := sqlitebatch.StartWorker(db, test.options); err == nil {
+				t.Fatal("expected invalid worker options to return an error")
+			}
+		})
+	}
 }
