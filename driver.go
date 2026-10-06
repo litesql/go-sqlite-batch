@@ -13,13 +13,12 @@ import (
 
 // Options controls how standalone Exec operations are grouped.
 type Options struct {
-	BaseDriver driver.Driver
-	MaxBatch   int
-	MaxDelay   time.Duration
-	QueueSize  int
+	MaxBatch  int
+	MaxDelay  time.Duration
+	QueueSize int
 }
 
-// Driver wraps modernc.org/sqlite and batches standalone Exec operations.
+// Driver wraps any SQLite database/sql driver and batches standalone Exec operations.
 // Explicit transactions and queries continue to use their own database/sql connection.
 type Driver struct {
 	base  driver.Driver
@@ -29,7 +28,7 @@ type Driver struct {
 }
 
 // New creates a SQLite database/sql driver with a shared writer worker per DSN.
-func New(opts Options) *Driver {
+func New(baseDriver driver.Driver, opts Options) *Driver {
 	if opts.MaxBatch <= 0 {
 		opts.MaxBatch = 200
 	}
@@ -40,7 +39,7 @@ func New(opts Options) *Driver {
 		opts.QueueSize = 5000
 	}
 	return &Driver{
-		base:  opts.BaseDriver,
+		base:  baseDriver,
 		opts:  opts,
 		conns: make(map[string]*coordinator),
 	}

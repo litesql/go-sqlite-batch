@@ -6,15 +6,28 @@ A `database/sql` wrapper driver for micro-batching standalone SQLite writes.
 
 Register the wrapper under its own driver name before calling `sql.Open`:
 
+- Using `github.com/mattn/go-sqlite3`
+
 ```go
-sql.Register("sqlite-batch", sqlitebatch.New(sqlitebatch.Options{
-    BaseDriver: &sqlite.Driver{},
+sql.Register("sqlite-batch", sqlitebatch.New(&sqlite3.SQLiteDriver{}, sqlitebatch.Options{    
 	MaxBatch:  200,
 	MaxDelay:  20 * time.Millisecond,
 	QueueSize: 5000,
 }))
 
-db, err := sql.Open("sqlite-batch", "file:app.db?mode=rwc")
+db, err := sql.Open("sqlite-batch", "file:app.db")
+```
+
+- Using `modernc.org/sqlite`
+
+```go
+sql.Register("sqlite-batch", sqlitebatch.New(&sqlite.Driver{}, sqlitebatch.Options{    
+	MaxBatch:  200,
+	MaxDelay:  20 * time.Millisecond,
+	QueueSize: 5000,
+}))
+
+db, err := sql.Open("sqlite-batch", "file:app.db")
 ```
 
 Standalone `Exec` calls, including executions through prepared statements, are queued in a bounded channel and committed together when `MaxBatch` is reached or `MaxDelay` expires. Each operation gets a savepoint: one failed statement does not undo successful statements in that batch. The caller receives success only after the physical transaction commits.

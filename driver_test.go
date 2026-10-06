@@ -20,11 +20,10 @@ func openDB(t *testing.T) *sql.DB {
 
 	const name = "sqlite-batch-test"
 	registerDriver.Do(func() {
-		sql.Register(name, sqlitebatch.New(sqlitebatch.Options{
-			BaseDriver: &sqlite.Driver{},
-			MaxBatch:   32,
-			MaxDelay:   10 * time.Millisecond,
-			QueueSize:  256,
+		sql.Register(name, sqlitebatch.New(&sqlite.Driver{}, sqlitebatch.Options{
+			MaxBatch:  32,
+			MaxDelay:  10 * time.Millisecond,
+			QueueSize: 256,
 		}))
 	})
 

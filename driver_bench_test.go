@@ -17,11 +17,10 @@ var registerBenchmarkDriver sync.Once
 
 func BenchmarkSQLiteConcurrentWrites(b *testing.B) {
 	registerBenchmarkDriver.Do(func() {
-		sql.Register("sqlite-batch-bench", sqlitebatch.New(sqlitebatch.Options{
-			BaseDriver: &sqlite.Driver{},
-			MaxBatch:   64,
-			MaxDelay:   1 * time.Millisecond,
-			QueueSize:  4096,
+		sql.Register("sqlite-batch-bench", sqlitebatch.New(&sqlite.Driver{}, sqlitebatch.Options{
+			MaxBatch:  64,
+			MaxDelay:  1 * time.Millisecond,
+			QueueSize: 4096,
 		}))
 	})
 
