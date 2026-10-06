@@ -2,6 +2,7 @@ package main
 
 import (
 	"database/sql"
+	"log/slog"
 	"net/http"
 	"time"
 
@@ -10,14 +11,13 @@ import (
 )
 
 func main() {
-	sql.Register("sqlite-batch", sqlitebatch.New(sqlitebatch.Options{
-		BaseDriver: &sqlite.Driver{},
-		MaxBatch:   200,
-		MaxDelay:   20 * time.Millisecond,
-		QueueSize:  5000,
+	sql.Register("sqlite-batch", sqlitebatch.New(&sqlite.Driver{}, sqlitebatch.Options{
+		MaxBatch:  200,
+		MaxDelay:  20 * time.Millisecond,
+		QueueSize: 5000,
 	}))
 
-	db, err := sql.Open("sqlite-microbatch", "file:example.db?cache=shared&mode=rwc")
+	db, err := sql.Open("sqlite-batch", "file:example.db?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)&_pragma=sync(NORMAL)")
 	if err != nil {
 		panic(err)
 	}
@@ -41,6 +41,7 @@ func handleLogs(db *sql.DB) http.HandlerFunc {
 		line := r.URL.Query().Get("line")
 		if _, err := db.ExecContext(r.Context(), `INSERT INTO logs (line) VALUES (?)`, line); err != nil {
 			http.Error(w, "failed to insert log", http.StatusInternalServerError)
+			slog.Error("failed to insert log", "error", err)
 			return
 		}
 		w.WriteHeader(http.StatusOK)
